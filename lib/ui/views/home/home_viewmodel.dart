@@ -1,8 +1,10 @@
 // ignore_for_file: use_build_context_synchronously
 import 'dart:io';
+
 import 'package:app_installer/app_installer.dart';
 import 'package:cross_connectivity/cross_connectivity.dart';
 import 'package:device_apps/device_apps.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_i18n/flutter_i18n.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -10,13 +12,13 @@ import 'package:injectable/injectable.dart';
 import 'package:revanced_manager/app/app.locator.dart';
 import 'package:revanced_manager/app/app.router.dart';
 import 'package:revanced_manager/models/patched_application.dart';
+import 'package:revanced_manager/services/github_api.dart';
 import 'package:revanced_manager/services/manager_api.dart';
 import 'package:revanced_manager/services/patcher_api.dart';
 import 'package:revanced_manager/services/toast.dart';
 import 'package:revanced_manager/ui/views/navigation/navigation_viewmodel.dart';
 import 'package:revanced_manager/ui/views/patcher/patcher_viewmodel.dart';
-import 'package:revanced_manager/ui/widgets/shared/custom_material_button.dart';
-import 'package:sentry_flutter/sentry_flutter.dart';
+import 'package:revanced_manager/ui/widgets/homeView/update_confirmation_dialog.dart';
 import 'package:stacked/stacked.dart';
 import 'package:stacked_services/stacked_services.dart';
 import 'package:timezone/timezone.dart' as tz;
@@ -26,6 +28,7 @@ class HomeViewModel extends BaseViewModel {
   final NavigationService _navigationService = locator<NavigationService>();
   final ManagerAPI _managerAPI = locator<ManagerAPI>();
   final PatcherAPI _patcherAPI = locator<PatcherAPI>();
+  final GithubAPI _githubAPI = locator<GithubAPI>();
   final Toast _toast = locator<Toast>();
   final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
   DateTime? _lastUpdate;
@@ -45,9 +48,9 @@ class HomeViewModel extends BaseViewModel {
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>()
         ?.requestPermission();
-    bool isConnected = await Connectivity().checkConnection();
+    final bool isConnected = await Connectivity().checkConnection();
     if (!isConnected) {
-      _toast.show('homeView.noConnection');
+      _toast.showBottom('homeView.noConnection');
     }
     _getPatchedApps();
     _managerAPI.reAssessSavedApps().then((_) => _getPatchedApps());
@@ -65,7 +68,7 @@ class HomeViewModel extends BaseViewModel {
     notifyListeners();
   }
 
-  void navigateToPatcher(PatchedApplication app) async {
+  Future<void> navigateToPatcher(PatchedApplication app) async {
     locator<PatcherViewModel>().selectedApp = app;
     locator<PatcherViewModel>().selectedPatches =
         await _patcherAPI.getAppliedPatches(app.appliedPatches);
@@ -74,10 +77,7 @@ class HomeViewModel extends BaseViewModel {
   }
 
   void _getPatchedApps() {
-    patchedInstalledApps = _managerAPI
-        .getPatchedApps()
-        .where((app) => app.hasUpdates == false)
-        .toList();
+    patchedInstalledApps = _managerAPI.getPatchedApps().toList();
     patchedUpdatableApps = _managerAPI
         .getPatchedApps()
         .where((app) => app.hasUpdates == true)
@@ -86,17 +86,19 @@ class HomeViewModel extends BaseViewModel {
   }
 
   Future<bool> hasManagerUpdates() async {
-    String? latestVersion = await _managerAPI.getLatestManagerVersion();
-    String currentVersion = await _managerAPI.getCurrentManagerVersion();
+    final String? latestVersion = await _managerAPI.getLatestManagerVersion();
+    final String currentVersion = await _managerAPI.getCurrentManagerVersion();
     if (latestVersion != null) {
       try {
-        int latestVersionInt =
+        final int latestVersionInt =
             int.parse(latestVersion.replaceAll(RegExp('[^0-9]'), ''));
-        int currentVersionInt =
+        final int currentVersionInt =
             int.parse(currentVersion.replaceAll(RegExp('[^0-9]'), ''));
         return latestVersionInt > currentVersionInt;
-      } on Exception catch (e, s) {
-        await Sentry.captureException(e, stackTrace: s);
+      } on Exception catch (e) {
+        if (kDebugMode) {
+          print(e);
+        }
         return false;
       }
     }
@@ -105,8 +107,8 @@ class HomeViewModel extends BaseViewModel {
 
   Future<void> updateManager(BuildContext context) async {
     try {
-      _toast.show('homeView.downloadingMessage');
-      File? managerApk = await _managerAPI.downloadManager();
+      _toast.showBottom('homeView.downloadingMessage');
+      final File? managerApk = await _managerAPI.downloadManager();
       if (managerApk != null) {
         await flutterLocalNotificationsPlugin.zonedSchedule(
           0,
@@ -132,51 +134,43 @@ class HomeViewModel extends BaseViewModel {
           uiLocalNotificationDateInterpretation:
               UILocalNotificationDateInterpretation.absoluteTime,
         );
-        _toast.show('homeView.installingMessage');
+        _toast.showBottom('homeView.installingMessage');
         await AppInstaller.installApk(managerApk.path);
       } else {
-        _toast.show('homeView.errorDownloadMessage');
+        _toast.showBottom('homeView.errorDownloadMessage');
       }
-    } on Exception catch (e, s) {
-      await Sentry.captureException(e, stackTrace: s);
-      _toast.show('homeView.errorInstallMessage');
+    } on Exception catch (e) {
+      if (kDebugMode) {
+        print(e);
+      }
+      _toast.showBottom('homeView.errorInstallMessage');
     }
   }
 
   void updatesAreDisabled() {
-    _toast.show('homeView.updatesDisabled');
+    _toast.showBottom('homeView.updatesDisabled');
   }
 
-  Future<void> showUpdateConfirmationDialog(BuildContext parentContext) async {
-    return showDialog(
+  Future<void> showUpdateConfirmationDialog(BuildContext parentContext) {
+    return showModalBottomSheet(
       context: parentContext,
-      builder: (context) => AlertDialog(
-        title: I18nText('homeView.updateDialogTitle'),
-        backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
-        content: I18nText('homeView.updateDialogText'),
-        actions: <Widget>[
-          CustomMaterialButton(
-            isFilled: false,
-            label: I18nText('noButton'),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-          CustomMaterialButton(
-            label: I18nText('yesButton'),
-            onPressed: () {
-              Navigator.of(context).pop();
-              updateManager(parentContext);
-            },
-          )
-        ],
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24.0)),
       ),
+      builder: (context) => const UpdateConfirmationDialog(),
     );
   }
 
-  Future<String?> getLatestPatcherReleaseTime() async {
+  Future<Map<String, dynamic>?> getLatestManagerRelease() {
+    return _githubAPI.getLatestRelease(_managerAPI.defaultManagerRepo);
+  }
+
+  Future<String?> getLatestPatcherReleaseTime() {
     return _managerAPI.getLatestPatcherReleaseTime();
   }
 
-  Future<String?> getLatestManagerReleaseTime() async {
+  Future<String?> getLatestManagerReleaseTime() {
     return _managerAPI.getLatestManagerReleaseTime();
   }
 

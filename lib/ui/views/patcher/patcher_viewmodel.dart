@@ -40,43 +40,45 @@ class PatcherViewModel extends BaseViewModel {
   }
 
   Future<bool> isValidPatchConfig() async {
-    bool needsResourcePatching = await _patcherAPI.needsResourcePatching(
+    final bool needsResourcePatching = await _patcherAPI.needsResourcePatching(
       selectedPatches,
     );
     if (needsResourcePatching && selectedApp != null) {
-      bool isSplit = await _managerAPI.isSplitApk(selectedApp!);
+      final bool isSplit = await _managerAPI.isSplitApk(selectedApp!);
       return !isSplit;
     }
     return true;
   }
 
   Future<void> showPatchConfirmationDialog(BuildContext context) async {
-    bool isValid = await isValidPatchConfig();
-    if (isValid) {
-      navigateToInstaller();
-    } else {
-      return showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: I18nText('patcherView.patchDialogTitle'),
-          backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
-          content: I18nText('patcherView.patchDialogText'),
-          actions: <Widget>[
-            CustomMaterialButton(
-              isFilled: false,
-              label: I18nText('noButton'),
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-            CustomMaterialButton(
-              label: I18nText('yesButton'),
-              onPressed: () {
-                Navigator.of(context).pop();
-                navigateToInstaller();
-              },
-            )
-          ],
-        ),
-      );
+    final bool isValid = await isValidPatchConfig();
+    if (context.mounted) {
+      if (isValid) {
+        navigateToInstaller();
+      } else {
+        return showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: I18nText('warning'),
+            backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+            content: I18nText('patcherView.patchDialogText'),
+            actions: <Widget>[
+              CustomMaterialButton(
+                isFilled: false,
+                label: I18nText('noButton'),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              CustomMaterialButton(
+                label: I18nText('yesButton'),
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  navigateToInstaller();
+                },
+              )
+            ],
+          ),
+        );
+      }
     }
   }
 
@@ -106,5 +108,17 @@ class PatcherViewModel extends BaseViewModel {
       context,
       'appSelectorCard.recommendedVersion',
     )}: $recommendedVersion';
+  }
+
+  Future<void> loadLastSelectedPatches() async {
+    this.selectedPatches.clear();
+    final List<String> selectedPatches =
+        await _managerAPI.getSelectedPatches(selectedApp!.originalPackageName);
+    final List<Patch> patches =
+        _patcherAPI.getFilteredPatches(selectedApp!.originalPackageName);
+    this
+        .selectedPatches
+        .addAll(patches.where((patch) => selectedPatches.contains(patch.name)));
+    notifyListeners();
   }
 }

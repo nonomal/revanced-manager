@@ -11,6 +11,7 @@ import app.revanced.manager.flutter.utils.zip.ZipFile
 import app.revanced.manager.flutter.utils.zip.structures.ZipEntry
 import app.revanced.patcher.Patcher
 import app.revanced.patcher.PatcherOptions
+import app.revanced.patcher.extensions.PatchExtensions.compatiblePackages
 import app.revanced.patcher.extensions.PatchExtensions.patchName
 import app.revanced.patcher.logging.Logger
 import app.revanced.patcher.util.patch.PatchBundle
@@ -42,7 +43,6 @@ class MainActivity : FlutterActivity() {
                     val integrationsPath = call.argument<String>("integrationsPath")
                     val selectedPatches = call.argument<List<String>>("selectedPatches")
                     val cacheDirPath = call.argument<String>("cacheDirPath")
-                    val mergeIntegrations = call.argument<Boolean>("mergeIntegrations")
                     val keyStoreFilePath = call.argument<String>("keyStoreFilePath")
                     if (patchBundleFilePath != null &&
                         originalFilePath != null &&
@@ -52,7 +52,6 @@ class MainActivity : FlutterActivity() {
                         integrationsPath != null &&
                         selectedPatches != null &&
                         cacheDirPath != null &&
-                        mergeIntegrations != null &&
                         keyStoreFilePath != null
                     ) {
                         runPatcher(
@@ -65,7 +64,6 @@ class MainActivity : FlutterActivity() {
                             integrationsPath,
                             selectedPatches,
                             cacheDirPath,
-                            mergeIntegrations,
                             keyStoreFilePath
                         )
                     } else {
@@ -87,7 +85,6 @@ class MainActivity : FlutterActivity() {
         integrationsPath: String,
         selectedPatches: List<String>,
         cacheDirPath: String,
-        mergeIntegrations: Boolean,
         keyStoreFilePath: String
     ) {
         val originalFile = File(originalFilePath)
@@ -98,21 +95,7 @@ class MainActivity : FlutterActivity() {
         val keyStoreFile = File(keyStoreFilePath)
 
         Thread {
-            try {   
-                val patches = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CUPCAKE) {
-                    PatchBundle.Dex(
-                        patchBundleFilePath,
-                        DexClassLoader(
-                            patchBundleFilePath,
-                            cacheDirPath,
-                            null,
-                            javaClass.classLoader
-                        )
-                    ).loadPatches().filter { patch -> selectedPatches.any { it == patch.patchName } }
-                } else {
-                    TODO("VERSION.SDK_INT < CUPCAKE")
-                }
-
+            try {
                 handler.post {
                     installerChannel.invokeMethod(
                         "update",
@@ -152,19 +135,17 @@ class MainActivity : FlutterActivity() {
                         mapOf("progress" to 0.3, "header" to "", "log" to "")
                     )
                 }
-                if (mergeIntegrations) {
-                    handler.post {
-                        installerChannel.invokeMethod(
-                            "update",
-                            mapOf(
-                                "progress" to 0.4,
-                                "header" to "Merging integrations...",
-                                "log" to "Merging integrations"
-                            )
+                handler.post {
+                    installerChannel.invokeMethod(
+                        "update",
+                        mapOf(
+                            "progress" to 0.4,
+                            "header" to "Merging integrations...",
+                            "log" to "Merging integrations"
                         )
-                    }
-                    patcher.addFiles(listOf(integrations)) {}
+                    )
                 }
+                patcher.addIntegrations(listOf(integrations)) {}
 
                 handler.post {
                     installerChannel.invokeMethod(
@@ -177,6 +158,22 @@ class MainActivity : FlutterActivity() {
                     )
                 }
 
+                val patches = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CUPCAKE) {
+                    PatchBundle.Dex(
+                        patchBundleFilePath,
+                        DexClassLoader(
+                            patchBundleFilePath,
+                            cacheDirPath,
+                            null,
+                            javaClass.classLoader
+                        )
+                    ).loadPatches().filter { patch ->
+                        (patch.compatiblePackages?.any { it.name == patcher.context.packageMetadata.packageName } == true || patch.compatiblePackages.isNullOrEmpty()) &&
+                                selectedPatches.any { it == patch.patchName }
+                    }
+                } else {
+                    TODO("VERSION.SDK_INT < CUPCAKE")
+                }
                 patcher.addPatches(patches)
                 patcher.executePatches().forEach { (patch, res) ->
                     if (res.isSuccess) {
@@ -193,7 +190,7 @@ class MainActivity : FlutterActivity() {
                         }
                         return@forEach
                     }
-                    val msg = "$patch failed.\nError:\n" + res.exceptionOrNull()!!.printStackTrace()
+                    val msg = "Failed to apply $patch: " + "${res.exceptionOrNull()!!.message ?: res.exceptionOrNull()!!.cause!!::class.simpleName}"
                     handler.post {
                         installerChannel.invokeMethod(
                             "update",
@@ -308,13 +305,7 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        override fun trace(msg: String) {
-            handler.post {
-                installerChannel.invokeMethod(
-                    "update",
-                    mapOf("progress" to -1.0, "header" to "", "log" to msg)
-                )
-            }
+        override fun trace(_msg: String) { /* unused */
         }
     }
 }
